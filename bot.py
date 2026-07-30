@@ -56,3 +56,8 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             "log_url": logger.get_log_url()
         }
         await update.message.reply_text(text=json.dumps(error_resp, separators=(',', ':')))
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
