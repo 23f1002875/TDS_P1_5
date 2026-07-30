@@ -61,3 +61,44 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+
+
+import asyncio
+import os
+import requests
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+# Get your public Render URL from environment variable or default string
+APP_URL = os.getenv("BASE_URL", "https://tds-p1-5.onrender.com")
+
+async def keep_alive_loop():
+    """Pings the /health endpoint every 10 minutes to prevent Render from sleeping."""
+    health_endpoint = f"{APP_URL.rstrip('/')}/health"
+    
+    # Wait 10 seconds after server starts before the first ping
+    await asyncio.sleep(10)
+    
+    while True:
+        try:
+            # Send a fast GET request to /health
+            response = requests.get(health_endpoint, timeout=10)
+            print(f"[Keep-Alive] Pinged {health_endpoint} - Status: {response.status_code}")
+        except Exception as err:
+            print(f"[Keep-Alive] Ping failed: {err}")
+            
+        # Sleep for 10 minutes (600 seconds) before pinging again
+        await asyncio.sleep(600)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start the background loop when FastAPI boots
+    ping_task = asyncio.create_task(keep_alive_loop())
+    yield
+    # Shutdown: Cancel the task when server stops
+    ping_task.cancel()
+
+# Initialize FastAPI with the lifespan handler
+app = FastAPI(lifespan=lifespan)
