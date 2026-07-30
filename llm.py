@@ -1,28 +1,39 @@
 import os
 import json
-import httpx
+import asyncio
+import requests
 from typing import Any
-from openai import AsyncOpenAI
 
 class LLMAgent:
-    """Interacts with OpenAI-compatible APIs using event-loop safe client management."""
+    """Interacts with OpenAI-compatible APIs using robust thread-safe requests execution."""
     
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("OPENAI_API_KEY", "")
         raw_base = os.getenv("OPENAI_BASE_URL", "https://aipipe.org/openrouter/v1")
         self.base_url = raw_base.rstrip("/")
         self.model = os.getenv("LLM_MODEL", "openai/gpt-4o")
 
-    def _get_client(self) -> AsyncOpenAI:
-        """Dynamically creates AsyncOpenAI inside the active request's event loop."""
-        return AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            http_client=httpx.AsyncClient(
-                timeout=60.0,
-                follow_redirects=True
-            )
-        )
+    def _make_request(self, messages: list, temperature: float = 0.0) -> str:
+        """Synchronous HTTP call executed in a thread pool to avoid async/httpx socket failures."""
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature
+        }
+        
+        # 30-second timeout to handle proxy latency gracefully
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code != 200:
+            raise RuntimeError(f"API Error ({response.status_code}): {response.text}")
+            
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
 
     async def generate_python_code(self, query: str, datasets_info: str) -> str:
         """Generates pandas code to answer the query."""
@@ -36,19 +47,13 @@ class LLMAgent:
             "Reply ONLY with raw python code. No explanations. No markdown formatting backticks."
         )
 
-        client = self._get_client()
-        try:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query}
-                ],
-                temperature=0.0,
-            )
-            return response.choices[0].message.content.strip()
-        finally:
-            await client.close()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query}
+        ]
+
+        # Offload synchronous requests call to asyncio thread pool
+        return await asyncio.to_thread(self._make_request, messages, 0.0)
 
     async def format_final_answer(self, user_query: str, raw_result: Any) -> str:
         """Formats the raw result into the user's requested JSON shape."""
@@ -63,16 +68,9 @@ class LLMAgent:
         
         user_prompt = f"User's request: {user_query}\n\nRaw Computed Result: {str(raw_result)}"
 
-        client = self._get_client()
-        try:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0
-            )
-            return response.choices[0].message.content.strip()
-        finally:
-            await client.close()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        return await asyncio.to_thread(self._make_request, messages, 0.0)
