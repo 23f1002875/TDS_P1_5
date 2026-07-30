@@ -1,20 +1,32 @@
 import os
 import json
+import re
 import asyncio
 import requests
 from typing import Any
 
 class LLMAgent:
-    """Interacts with OpenAI-compatible APIs using robust thread-safe requests execution."""
+    """Interacts with OpenAI-compatible APIs, dynamically reading environment variables per request."""
     
-    def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
-        raw_base = os.getenv("OPENAI_BASE_URL", "https://aipipe.org/openrouter/v1")
-        self.base_url = raw_base.rstrip("/")
-        self.model = os.getenv("LLM_MODEL", "openai/gpt-4o")
+    @property
+    def api_key(self) -> str:
+        return os.getenv("OPENAI_API_KEY", "").strip(' "\'')
+
+    @property
+    def base_url(self) -> str:
+        raw_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+        match = re.search(r'https?://[^\s\)\]]+', raw_base)
+        if match:
+            return match.group(0).rstrip("/")
+        return raw_base.strip(' "\'').rstrip("/")
+
+    @property
+    def model(self) -> str:
+        # Defaults to free OpenRouter router if LLM_MODEL is not set
+        return os.getenv("LLM_MODEL", "openrouter/free").strip(' "\'')
 
     def _make_request(self, messages: list, temperature: float = 0.0) -> str:
-        """Synchronous HTTP call executed in a thread pool to avoid async/httpx socket failures."""
+        """Synchronous HTTP call executed in a thread pool with dynamic settings."""
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -26,17 +38,18 @@ class LLMAgent:
             "temperature": temperature
         }
         
-        # 30-second timeout to handle proxy latency gracefully
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         
         if response.status_code != 200:
-            raise RuntimeError(f"API Error ({response.status_code}): {response.text}")
+            raise RuntimeError(
+                f"API Error ({response.status_code}) using model '{self.model}': {response.text}"
+            )
             
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
 
     async def generate_python_code(self, query: str, datasets_info: str) -> str:
-        """Generates pandas code to answer the query."""
+        """Generates pandas code to answer the user query."""
         system_prompt = (
             "You are an expert Python data analyst.\n"
             "You have access to a dictionary named `dfs` which maps filenames to pandas DataFrames.\n"
@@ -52,11 +65,10 @@ class LLMAgent:
             {"role": "user", "content": query}
         ]
 
-        # Offload synchronous requests call to asyncio thread pool
         return await asyncio.to_thread(self._make_request, messages, 0.0)
 
     async def format_final_answer(self, user_query: str, raw_result: Any) -> str:
-        """Formats the raw result into the user's requested JSON shape."""
+        """Formats raw calculated output into the user's requested JSON shape."""
         system_prompt = (
             "You are a strict JSON formatter. The user requested an answer to a question, "
             "and also provided a desired JSON schema or format.\n"
